@@ -595,26 +595,21 @@ void* qoi_decode(const void* data, int size, qoi_desc* desc, int channels) {
 	return pixels;
 }
 
+#include <omp.h>
+
 void* qoi_encode_parallel(const void* data, const qoi_desc* desc, int* out_len) {
-	if (
-		data == NULL || out_len == NULL || desc == NULL ||
-		desc->width == 0 || desc->height == 0 ||
-		desc->channels < 3 || desc->channels > 4 ||
-		desc->colorspace > 1 ||
-		desc->height >= QOI_PIXELS_MAX / desc->width
-		) {
+	if (!data || !desc || !out_len || desc->width == 0 || desc->height == 0 ||
+		desc->channels < 3 || desc->channels > 4 || desc->colorspace > 1 ||
+		desc->height >= QOI_PIXELS_MAX / desc->width) {
 		return NULL;
 	}
 
 	int max_size = desc->width * desc->height * (desc->channels + 1) +
 		QOI_HEADER_SIZE + sizeof(qoi_padding);
-
 	unsigned char* bytes = (unsigned char*)QOI_MALLOC(max_size);
-	if (!bytes) {
-		return NULL;
-	}
+	if (!bytes) return NULL;
 
-	// Write header
+	// Write header (sequential)
 	int p = 0;
 	qoi_write_32(bytes, &p, QOI_MAGIC);
 	qoi_write_32(bytes, &p, desc->width);
@@ -627,65 +622,29 @@ void* qoi_encode_parallel(const void* data, const qoi_desc* desc, int* out_len) 
 	int width = desc->width;
 	int height = desc->height;
 
-	// Shared state between chunks
-	typedef struct {
-		unsigned char* data;
-		int size;
-		qoi_rgba_t last_pixel;
-		qoi_rgba_t index[64];
-	} ChunkState;
+	// Shared state: color index
+	qoi_rgba_t index[64];
+	QOI_ZEROARR(index);
 
-	// Divide image into horizontal strips
-	const int min_rows_per_chunk = 8;  // Minimum rows to process per chunk
-	int num_chunks = (height + min_rows_per_chunk - 1) / min_rows_per_chunk;
-	ChunkState* chunk_states = (ChunkState*)QOI_MALLOC(num_chunks * sizeof(ChunkState));
-
-	if (!chunk_states) {
-		QOI_FREE(bytes);
-		return NULL;
-	}
-
-	// Initialize first chunk's previous pixel
-	qoi_rgba_t initial_pixel = { {0, 0, 0, 255} };
-
-#pragma omp parallel for schedule(dynamic) 
-	for (int chunk = 0; chunk < num_chunks; chunk++) {
-		int start_row = chunk * min_rows_per_chunk;
-		int end_row = (chunk + 1) * min_rows_per_chunk;
-		if (end_row > height) end_row = height;
-
-		int chunk_height = end_row - start_row;
-		int chunk_max_size = width * chunk_height * (channels + 1);
-		unsigned char* chunk_bytes = (unsigned char*)QOI_MALLOC(chunk_max_size);
-		int chunk_p = 0;
-
-		// Initialize chunk state
-		ChunkState* state = &chunk_states[chunk];
-		state->data = chunk_bytes;
-
-		// Initialize index array
-		if (chunk == 0) {
-			QOI_ZEROARR(state->index);
-		}
-		else {
-			// Copy index array from previous chunk
-			memcpy(state->index, chunk_states[chunk - 1].index, sizeof(state->index));
-		}
-
-		// Set initial pixel for this chunk
-		qoi_rgba_t px_prev = initial_pixel;
-		if (chunk > 0) {
-			// Get last pixel from previous chunk
-			px_prev = chunk_states[chunk - 1].last_pixel;
-		}
-		qoi_rgba_t px = px_prev;
-
+	// Parallel processing of chunks of rows
+#pragma omp parallel
+	{
+		// Thread-local buffer for encoding a chunk of data
+		unsigned char* local_buffer = (unsigned char*)QOI_MALLOC(width * (channels + 1));
+		int local_size = 0;
+		qoi_rgba_t px_prev = { 0, 0, 0, 255 }; // Thread-local previous pixel
+		qoi_rgba_t px;
 		int run = 0;
 
-		// Process pixels in this chunk
-		for (int y = start_row; y < end_row; y++) {
+		// Each thread will process a range of rows (instead of just one)
+#pragma omp for schedule(dynamic, 8)
+		for (int y = 0; y < height; y++) {
+			local_size = 0;
+			run = 0;
+			int row_start = y * width * channels;
+
 			for (int x = 0; x < width; x++) {
-				int px_pos = (y * width + x) * channels;
+				int px_pos = row_start + x * channels;
 
 				// Read pixel
 				px.rgba.r = pixels[px_pos + 0];
@@ -695,24 +654,25 @@ void* qoi_encode_parallel(const void* data, const qoi_desc* desc, int* out_len) 
 
 				if (px.v == px_prev.v) {
 					run++;
-					if (run == 62 || (x == width - 1 && y == end_row - 1)) {
-						chunk_bytes[chunk_p++] = QOI_OP_RUN | (run - 1);
+					if (run == 62 || x == width - 1) {
+						local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
 						run = 0;
 					}
 				}
 				else {
 					if (run > 0) {
-						chunk_bytes[chunk_p++] = QOI_OP_RUN | (run - 1);
+						local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
 						run = 0;
 					}
 
 					int index_pos = QOI_COLOR_HASH(px) % 64;
 
-					if (state->index[index_pos].v == px.v) {
-						chunk_bytes[chunk_p++] = QOI_OP_INDEX | index_pos;
+					// Avoid critical sections by using thread-local index
+					if (index[index_pos].v == px.v) {
+						local_buffer[local_size++] = QOI_OP_INDEX | index_pos;
 					}
 					else {
-						state->index[index_pos] = px;
+						index[index_pos] = px;
 
 						if (px.rgba.a == px_prev.rgba.a) {
 							signed char vr = px.rgba.r - px_prev.rgba.r;
@@ -722,61 +682,49 @@ void* qoi_encode_parallel(const void* data, const qoi_desc* desc, int* out_len) 
 							signed char vg_r = vr - vg;
 							signed char vg_b = vb - vg;
 
-							if (
-								vr > -3 && vr < 2 &&
-								vg > -3 && vg < 2 &&
-								vb > -3 && vb < 2
-								) {
-								chunk_bytes[chunk_p++] = QOI_OP_DIFF |
+							if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 && vb < 2) {
+								local_buffer[local_size++] = QOI_OP_DIFF |
 									((vr + 2) << 4) | ((vg + 2) << 2) | (vb + 2);
 							}
-							else if (
-								vg_r > -9 && vg_r < 8 &&
-								vg > -33 && vg < 32 &&
-								vg_b > -9 && vg_b < 8
-								) {
-								chunk_bytes[chunk_p++] = QOI_OP_LUMA | (vg + 32);
-								chunk_bytes[chunk_p++] = ((vg_r + 8) << 4) | (vg_b + 8);
+							else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
+								vg_b > -9 && vg_b < 8) {
+								local_buffer[local_size++] = QOI_OP_LUMA | (vg + 32);
+								local_buffer[local_size++] = ((vg_r + 8) << 4) | (vg_b + 8);
 							}
 							else {
-								chunk_bytes[chunk_p++] = QOI_OP_RGB;
-								chunk_bytes[chunk_p++] = px.rgba.r;
-								chunk_bytes[chunk_p++] = px.rgba.g;
-								chunk_bytes[chunk_p++] = px.rgba.b;
+								local_buffer[local_size++] = QOI_OP_RGB;
+								local_buffer[local_size++] = px.rgba.r;
+								local_buffer[local_size++] = px.rgba.g;
+								local_buffer[local_size++] = px.rgba.b;
 							}
 						}
 						else {
-							chunk_bytes[chunk_p++] = QOI_OP_RGBA;
-							chunk_bytes[chunk_p++] = px.rgba.r;
-							chunk_bytes[chunk_p++] = px.rgba.g;
-							chunk_bytes[chunk_p++] = px.rgba.b;
-							chunk_bytes[chunk_p++] = px.rgba.a;
+							local_buffer[local_size++] = QOI_OP_RGBA;
+							local_buffer[local_size++] = px.rgba.r;
+							local_buffer[local_size++] = px.rgba.g;
+							local_buffer[local_size++] = px.rgba.b;
+							local_buffer[local_size++] = px.rgba.a;
 						}
 					}
 				}
+
 				px_prev = px;
+			}
+
+			// Merge thread-local buffer into global buffer at the end of each row's processing
+#pragma omp critical
+			{
+				memcpy(bytes + p, local_buffer, local_size);
+				p += local_size;
 			}
 		}
 
-		// Store chunk results
-		state->size = chunk_p;
-		state->last_pixel = px;
+		QOI_FREE(local_buffer);
 	}
 
-	// Combine chunks sequentially
-	for (int i = 0; i < num_chunks; i++) {
-		if (chunk_states[i].data && chunk_states[i].size > 0) {
-			memcpy(bytes + p, chunk_states[i].data, chunk_states[i].size);
-			p += chunk_states[i].size;
-			QOI_FREE(chunk_states[i].data);
-		}
-	}
-	QOI_FREE(chunk_states);
-
-	// Add padding
-	for (int i = 0; i < (int)sizeof(qoi_padding); i++) {
-		bytes[p++] = qoi_padding[i];
-	}
+	// Write padding (sequential)
+	memcpy(bytes + p, qoi_padding, sizeof(qoi_padding));
+	p += sizeof(qoi_padding);
 
 	*out_len = p;
 	return bytes;
@@ -896,6 +844,8 @@ void* qoi_decode_parallel(const void* data, int size, qoi_desc* desc, int channe
 
 	return pixels;
 }
+
+
 #ifndef QOI_NO_STDIO
 #include <stdio.h>
 

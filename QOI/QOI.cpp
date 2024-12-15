@@ -154,6 +154,108 @@ PerformanceMetrics decode_file(const std::string& input_path, const std::string&
     return metrics;
 }
 
+PerformanceMetrics encode_file_parallel(const std::string& input_path, const std::string& output_path) {
+    PerformanceMetrics metrics = { 0 };
+    int64_t start_time;
+
+    // Load image
+    start_time = get_time_ns();
+    unsigned char* data = stbi_load(input_path.c_str(), &metrics.width, &metrics.height, &metrics.channels, 0);
+    metrics.load_time = get_time_ns() - start_time;
+
+    if (!data) {
+        printf("Failed to load image: %s\n", input_path.c_str());
+        return metrics;
+    }
+
+    qoi_desc desc = {
+        static_cast<unsigned int>(metrics.width),
+        static_cast<unsigned int>(metrics.height),
+        metrics.channels,
+        QOI_SRGB
+    };
+
+    // Encode (Parallel)
+    start_time = get_time_ns();
+    int encoded_size;
+    void* encoded_data = qoi_encode_parallel(data, &desc, &encoded_size);
+    metrics.process_time = get_time_ns() - start_time;
+
+    if (!encoded_data) {
+        printf("Failed to encode image: %s\n", input_path.c_str());
+        stbi_image_free(data);
+        return metrics;
+    }
+
+    // Save
+    start_time = get_time_ns();
+    FILE* f = fopen(output_path.c_str(), "wb");
+    if (f) {
+        fwrite(encoded_data, 1, encoded_size, f);
+        fclose(f);
+    }
+    metrics.save_time = get_time_ns() - start_time;
+
+    // Calculate metrics
+    int original_size = metrics.width * metrics.height * metrics.channels;
+    metrics.total_size = encoded_size;
+    metrics.compression_ratio = (1.0f - (float)encoded_size / original_size) * 100;
+
+    // Cleanup
+    free(encoded_data);
+    stbi_image_free(data);
+    return metrics;
+}
+
+PerformanceMetrics decode_file_parallel(const std::string& input_path, const std::string& output_path) {
+    PerformanceMetrics metrics = { 0 };
+    int64_t start_time;
+
+    // Load file
+    start_time = get_time_ns();
+    FILE* f = fopen(input_path.c_str(), "rb");
+    if (!f) {
+        printf("Failed to open QOI file: %s\n", input_path.c_str());
+        return metrics;
+    }
+
+    fseek(f, 0, SEEK_END);
+    int file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    void* raw_data = malloc(file_size);
+    fread(raw_data, 1, file_size, f);
+    fclose(f);
+    metrics.load_time = get_time_ns() - start_time;
+
+    // Decode (Parallel)
+    start_time = get_time_ns();
+    qoi_desc desc;
+    void* decoded_data = qoi_decode(raw_data, file_size, &desc, 0);
+    free(raw_data);
+    metrics.process_time = get_time_ns() - start_time;
+
+    if (!decoded_data) {
+        printf("Failed to decode QOI file: %s\n", input_path.c_str());
+        return metrics;
+    }
+
+    metrics.width = desc.width;
+    metrics.height = desc.height;
+    metrics.channels = desc.channels;
+
+    // Save
+    start_time = get_time_ns();
+    stbi_write_png(output_path.c_str(), desc.width, desc.height,
+        desc.channels, decoded_data, desc.width * desc.channels);
+    metrics.save_time = get_time_ns() - start_time;
+
+    metrics.total_size = desc.width * desc.height * desc.channels;
+    free(decoded_data);
+    return metrics;
+}
+
+
 // Print comparison results
 void print_comparison_results(const std::string& filename,
     const PerformanceMetrics& seq_metrics,
@@ -217,6 +319,7 @@ int main(int argc, char* argv[]) {
     printf("Output Directory: %s\n", output_dir);
     printf("Threads: %d\n\n", num_threads);
 
+    // Ensure the output directory exists
     CreateDirectoryA(output_dir, NULL);
 
     WIN32_FIND_DATAA findData;
@@ -244,52 +347,14 @@ int main(int argc, char* argv[]) {
 
                     printf("Processing: %s\n", findData.cFileName);
 
-                    // Run sequential version
-                    PerformanceMetrics seq_metrics = encode_file(input_path, seq_output_path);
+                    // Sequential encoding
+                   /* PerformanceMetrics seq_metrics = encode_file(input_path, seq_output_path);*/
 
-                    // Run parallel version using your parallel implementation
-                    qoi_desc desc = {
-                        static_cast<unsigned int>(seq_metrics.width),
-                        static_cast<unsigned int>(seq_metrics.height),
-                        seq_metrics.channels,
-                        QOI_SRGB
-                    };
+                    // Parallel encoding
+                    PerformanceMetrics par_metrics = encode_file_parallel(input_path, par_output_path);
 
-                    PerformanceMetrics par_metrics = { 0 };
-                    int64_t start_time;
-
-                    // Load image for parallel processing
-                    start_time = get_time_ns();
-                    unsigned char* data = stbi_load(input_path, &par_metrics.width, &par_metrics.height, &par_metrics.channels, 0);
-                    par_metrics.load_time = get_time_ns() - start_time;
-
-                    if (data) {
-                        // Encode using parallel version
-                        start_time = get_time_ns();
-                        int encoded_size;
-                        void* encoded_data = qoi_encode_parallel(data, &desc, &encoded_size);
-                        par_metrics.process_time = get_time_ns() - start_time;
-
-                        if (encoded_data) {
-                            // Save parallel result
-                            start_time = get_time_ns();
-                            FILE* f = fopen(par_output_path, "wb");
-                            if (f) {
-                                fwrite(encoded_data, 1, encoded_size, f);
-                                fclose(f);
-                            }
-                            par_metrics.save_time = get_time_ns() - start_time;
-
-                            par_metrics.total_size = encoded_size;
-                            par_metrics.compression_ratio = (1.0f - (float)encoded_size / (desc.width * desc.height * desc.channels)) * 100;
-
-                            free(encoded_data);
-                        }
-                        stbi_image_free(data);
-                    }
-
-                    // Print comparison
-                    print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
+                    //// Print comparison results
+                    //print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
                 }
             }
         } while (FindNextFileA(hFind, &findData));
@@ -315,50 +380,14 @@ int main(int argc, char* argv[]) {
 
                 printf("Processing: %s\n", findData.cFileName);
 
-                // Run sequential version
-                PerformanceMetrics seq_metrics = decode_file(input_path, seq_output_path);
+                // Sequential decoding
+               /* PerformanceMetrics seq_metrics = decode_file(input_path, seq_output_path);*/
 
-                // Run parallel version
-                PerformanceMetrics par_metrics = { 0 };
-                int64_t start_time;
+                // Parallel decoding
+                PerformanceMetrics par_metrics = decode_file_parallel(input_path, par_output_path);
 
-                // Load file for parallel processing
-                start_time = get_time_ns();
-                FILE* f = fopen(input_path, "rb");
-                if (f) {
-                    fseek(f, 0, SEEK_END);
-                    int file_size = ftell(f);
-                    fseek(f, 0, SEEK_SET);
-                    void* raw_data = malloc(file_size);
-                    fread(raw_data, 1, file_size, f);
-                    fclose(f);
-                    par_metrics.load_time = get_time_ns() - start_time;
-
-                    // Decode using parallel version
-                    start_time = get_time_ns();
-                    qoi_desc desc;
-                    void* decoded_data = qoi_decode_parallel(raw_data, file_size, &desc, 0);
-                    free(raw_data);
-                    par_metrics.process_time = get_time_ns() - start_time;
-
-                    if (decoded_data) {
-                        par_metrics.width = desc.width;
-                        par_metrics.height = desc.height;
-                        par_metrics.channels = desc.channels;
-
-                        // Save parallel result
-                        start_time = get_time_ns();
-                        stbi_write_png(par_output_path, desc.width, desc.height,
-                            desc.channels, decoded_data, desc.width * desc.channels);
-                        par_metrics.save_time = get_time_ns() - start_time;
-
-                        par_metrics.total_size = desc.width * desc.height * desc.channels;
-                        free(decoded_data);
-                    }
-                }
-
-                // Print comparison
-                print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
+                //// Print comparison results
+                //print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
             }
         } while (FindNextFileA(hFind, &findData));
         FindClose(hFind);
