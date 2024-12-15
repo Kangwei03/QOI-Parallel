@@ -622,120 +622,226 @@ void* qoi_encode_parallel(const void* data, const qoi_desc* desc, int* out_len) 
 	int width = desc->width;
 	int height = desc->height;
 
-	// Shared state: color index
-	qoi_rgba_t index[64];
-	QOI_ZEROARR(index);
+	// Allocate arrays for row sizes and positions
+	int* row_sizes = (int*)QOI_MALLOC(height * sizeof(int));
+	int* row_positions = (int*)QOI_MALLOC(height * sizeof(int));
+	if (!row_sizes || !row_positions) {
+		QOI_FREE(bytes);
+		return NULL;
+	}
 
-	// Parallel processing of chunks of rows
+	// First pass: Calculate sizes
 #pragma omp parallel
 	{
-		// Thread-local buffer for encoding a chunk of data
 		unsigned char* local_buffer = (unsigned char*)QOI_MALLOC(width * (channels + 1));
-		int local_size = 0;
-		qoi_rgba_t px_prev = { 0, 0, 0, 255 }; // Thread-local previous pixel
-		qoi_rgba_t px;
-		int run = 0;
+		if (local_buffer) {
+			qoi_rgba_t index[64];
+			qoi_rgba_t px_prev = { 0, 0, 0, 255 };
+			qoi_rgba_t px = { 0 };
 
-		// Each thread will process a range of rows (instead of just one)
-#pragma omp for schedule(dynamic, 8)
-		for (int y = 0; y < height; y++) {
-			local_size = 0;
-			run = 0;
-			int row_start = y * width * channels;
+#pragma omp for schedule(static, 1)
+			for (int y = 0; y < height; y++) {
+				int local_size = 0;
+				int run = 0;
 
-			for (int x = 0; x < width; x++) {
-				int px_pos = row_start + x * channels;
+				QOI_ZEROARR(index);
+				px_prev.rgba.r = 0;
+				px_prev.rgba.g = 0;
+				px_prev.rgba.b = 0;
+				px_prev.rgba.a = 255;
 
-				// Read pixel
-				px.rgba.r = pixels[px_pos + 0];
-				px.rgba.g = pixels[px_pos + 1];
-				px.rgba.b = pixels[px_pos + 2];
-				px.rgba.a = channels == 4 ? pixels[px_pos + 3] : 255;
+				size_t row_start = y * width * channels;
 
-				if (px.v == px_prev.v) {
-					run++;
-					if (run == 62 || x == width - 1) {
-						local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
-						run = 0;
-					}
-				}
-				else {
-					if (run > 0) {
-						local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
-						run = 0;
-					}
+				for (int x = 0; x < width; x++) {
+					size_t px_pos = row_start + x * channels;
 
-					int index_pos = QOI_COLOR_HASH(px) % 64;
+					px.rgba.r = pixels[px_pos + 0];
+					px.rgba.g = pixels[px_pos + 1];
+					px.rgba.b = pixels[px_pos + 2];
+					px.rgba.a = channels == 4 ? pixels[px_pos + 3] : 255;
 
-					// Avoid critical sections by using thread-local index
-					if (index[index_pos].v == px.v) {
-						local_buffer[local_size++] = QOI_OP_INDEX | index_pos;
+					if (px.v == px_prev.v) {
+						run++;
+						if (run == 62 || x == width - 1) {
+							local_size++;
+							run = 0;
+						}
 					}
 					else {
-						index[index_pos] = px;
+						if (run > 0) {
+							local_size++;
+							run = 0;
+						}
 
-						if (px.rgba.a == px_prev.rgba.a) {
-							signed char vr = px.rgba.r - px_prev.rgba.r;
-							signed char vg = px.rgba.g - px_prev.rgba.g;
-							signed char vb = px.rgba.b - px_prev.rgba.b;
+						int index_pos = QOI_COLOR_HASH(px) % 64;
 
-							signed char vg_r = vr - vg;
-							signed char vg_b = vb - vg;
+						if (index[index_pos].v == px.v) {
+							local_size++;
+						}
+						else {
+							index[index_pos] = px;
 
-							if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 && vb < 2) {
-								local_buffer[local_size++] = QOI_OP_DIFF |
-									((vr + 2) << 4) | ((vg + 2) << 2) | (vb + 2);
-							}
-							else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
-								vg_b > -9 && vg_b < 8) {
-								local_buffer[local_size++] = QOI_OP_LUMA | (vg + 32);
-								local_buffer[local_size++] = ((vg_r + 8) << 4) | (vg_b + 8);
+							if (px.rgba.a == px_prev.rgba.a) {
+								signed char vr = px.rgba.r - px_prev.rgba.r;
+								signed char vg = px.rgba.g - px_prev.rgba.g;
+								signed char vb = px.rgba.b - px_prev.rgba.b;
+								signed char vg_r = vr - vg;
+								signed char vg_b = vb - vg;
+
+								if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 && vb < 2) {
+									local_size++;
+								}
+								else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
+									vg_b > -9 && vg_b < 8) {
+									local_size += 2;
+								}
+								else {
+									local_size += 4;
+								}
 							}
 							else {
-								local_buffer[local_size++] = QOI_OP_RGB;
+								local_size += 5;
+							}
+						}
+					}
+
+					px_prev = px;
+				}
+
+				if (run > 0) {
+					local_size++;
+				}
+
+				row_sizes[y] = local_size;
+			}
+
+			QOI_FREE(local_buffer);
+		}
+	}
+
+	// Calculate positions
+	row_positions[0] = p;  // Start after header
+	for (int i = 1; i < height; i++) {
+		row_positions[i] = row_positions[i - 1] + row_sizes[i - 1];
+	}
+
+	// Second pass: Actually encode and write data
+#pragma omp parallel
+	{
+		unsigned char* local_buffer = (unsigned char*)QOI_MALLOC(width * (channels + 1));
+		if (local_buffer) {
+			qoi_rgba_t index[64];
+			qoi_rgba_t px_prev = { 0, 0, 0, 255 };
+			qoi_rgba_t px = { 0 };
+
+#pragma omp for schedule(static, 1)
+			for (int y = 0; y < height; y++) {
+				int local_size = 0;
+				int run = 0;
+
+				QOI_ZEROARR(index);
+				px_prev.rgba.r = 0;
+				px_prev.rgba.g = 0;
+				px_prev.rgba.b = 0;
+				px_prev.rgba.a = 255;
+
+				size_t row_start = y * width * channels;
+
+				for (int x = 0; x < width; x++) {
+					size_t px_pos = row_start + x * channels;
+
+					px.rgba.r = pixels[px_pos + 0];
+					px.rgba.g = pixels[px_pos + 1];
+					px.rgba.b = pixels[px_pos + 2];
+					px.rgba.a = channels == 4 ? pixels[px_pos + 3] : 255;
+
+					if (px.v == px_prev.v) {
+						run++;
+						if (run == 62 || x == width - 1) {
+							local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
+							run = 0;
+						}
+					}
+					else {
+						if (run > 0) {
+							local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
+							run = 0;
+						}
+
+						int index_pos = QOI_COLOR_HASH(px) % 64;
+
+						if (index[index_pos].v == px.v) {
+							local_buffer[local_size++] = QOI_OP_INDEX | index_pos;
+						}
+						else {
+							index[index_pos] = px;
+
+							if (px.rgba.a == px_prev.rgba.a) {
+								signed char vr = px.rgba.r - px_prev.rgba.r;
+								signed char vg = px.rgba.g - px_prev.rgba.g;
+								signed char vb = px.rgba.b - px_prev.rgba.b;
+								signed char vg_r = vr - vg;
+								signed char vg_b = vb - vg;
+
+								if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 && vb < 2) {
+									local_buffer[local_size++] = QOI_OP_DIFF |
+										((vr + 2) << 4) | ((vg + 2) << 2) | (vb + 2);
+								}
+								else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
+									vg_b > -9 && vg_b < 8) {
+									local_buffer[local_size++] = QOI_OP_LUMA | (vg + 32);
+									local_buffer[local_size++] = ((vg_r + 8) << 4) | (vg_b + 8);
+								}
+								else {
+									local_buffer[local_size++] = QOI_OP_RGB;
+									local_buffer[local_size++] = px.rgba.r;
+									local_buffer[local_size++] = px.rgba.g;
+									local_buffer[local_size++] = px.rgba.b;
+								}
+							}
+							else {
+								local_buffer[local_size++] = QOI_OP_RGBA;
 								local_buffer[local_size++] = px.rgba.r;
 								local_buffer[local_size++] = px.rgba.g;
 								local_buffer[local_size++] = px.rgba.b;
+								local_buffer[local_size++] = px.rgba.a;
 							}
 						}
-						else {
-							local_buffer[local_size++] = QOI_OP_RGBA;
-							local_buffer[local_size++] = px.rgba.r;
-							local_buffer[local_size++] = px.rgba.g;
-							local_buffer[local_size++] = px.rgba.b;
-							local_buffer[local_size++] = px.rgba.a;
-						}
 					}
+
+					px_prev = px;
 				}
 
-				px_prev = px;
+				if (run > 0) {
+					local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
+				}
+
+				// Write directly to the correct position
+				memcpy(bytes + row_positions[y], local_buffer, local_size);
 			}
 
-			// Merge thread-local buffer into global buffer at the end of each row's processing
-#pragma omp critical
-			{
-				memcpy(bytes + p, local_buffer, local_size);
-				p += local_size;
-			}
+			QOI_FREE(local_buffer);
 		}
-
-		QOI_FREE(local_buffer);
 	}
+
+	// Calculate final position
+	p = row_positions[height - 1] + row_sizes[height - 1];
 
 	// Write padding (sequential)
 	memcpy(bytes + p, qoi_padding, sizeof(qoi_padding));
 	p += sizeof(qoi_padding);
+
+	QOI_FREE(row_sizes);
+	QOI_FREE(row_positions);
 
 	*out_len = p;
 	return bytes;
 }
 
 void* qoi_decode_parallel(const void* data, int size, qoi_desc* desc, int channels) {
-	if (
-		data == NULL || desc == NULL ||
+	if (data == NULL || desc == NULL ||
 		(channels != 0 && channels != 3 && channels != 4) ||
-		size < QOI_HEADER_SIZE + (int)sizeof(qoi_padding)
-		) {
+		size < QOI_HEADER_SIZE + (int)sizeof(qoi_padding)) {
 		return NULL;
 	}
 
@@ -749,13 +855,10 @@ void* qoi_decode_parallel(const void* data, int size, qoi_desc* desc, int channe
 	desc->channels = bytes[p++];
 	desc->colorspace = bytes[p++];
 
-	if (
-		desc->width == 0 || desc->height == 0 ||
+	if (desc->width == 0 || desc->height == 0 ||
 		desc->channels < 3 || desc->channels > 4 ||
-		desc->colorspace > 1 ||
-		header_magic != QOI_MAGIC ||
-		desc->height >= QOI_PIXELS_MAX / desc->width
-		) {
+		desc->colorspace > 1 || header_magic != QOI_MAGIC ||
+		desc->height >= QOI_PIXELS_MAX / desc->width) {
 		return NULL;
 	}
 
@@ -769,81 +872,94 @@ void* qoi_decode_parallel(const void* data, int size, qoi_desc* desc, int channe
 		return NULL;
 	}
 
-	// Process chunks in parallel by rows
-	int row_stride = desc->width * channels;
+	// Sequential decode to temporary buffer
+	unsigned char* decoded = (unsigned char*)QOI_MALLOC(px_len);
+	if (!decoded) {
+		QOI_FREE(pixels);
+		return NULL;
+	}
+
+	qoi_rgba_t index[64];
+	QOI_ZEROARR(index);
+	qoi_rgba_t px = { {0, 0, 0, 255} };
+	int run = 0;
+	int px_pos = 0;
 	int chunks_len = size - (int)sizeof(qoi_padding);
 
-#pragma omp parallel
-	{
-		qoi_rgba_t index[64];
-		QOI_ZEROARR(index);
-		qoi_rgba_t px = { {0, 0, 0, 255} };
+	// Sequential decode
+	while (px_pos < px_len && p < chunks_len) {
+		if (run > 0) {
+			run--;
+		}
+		else {
+			int b1 = bytes[p++];
 
-		int thread_id = omp_get_thread_num();
-		int num_threads = omp_get_num_threads();
-		int rows_per_thread = desc->height / num_threads;
-		int remaining_rows = desc->height % num_threads;
-		int start_row = thread_id * rows_per_thread + (thread_id < remaining_rows ? thread_id : remaining_rows);
-		int num_rows = rows_per_thread + (thread_id < remaining_rows ? 1 : 0);
-
-		int start_pos = start_row * row_stride;
-		int end_pos = start_pos + num_rows * row_stride;
-		int local_p = p;
-		int run = 0;
-
-		for (int px_pos = start_pos; px_pos < end_pos; px_pos += channels) {
-			if (run > 0) {
-				run--;
+			if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
+				px = index[b1];
 			}
-			else if (local_p < chunks_len) {
-				int b1 = bytes[local_p++];
-
-				if (b1 == QOI_OP_RGB) {
-					px.rgba.r = bytes[local_p++];
-					px.rgba.g = bytes[local_p++];
-					px.rgba.b = bytes[local_p++];
-				}
-				else if (b1 == QOI_OP_RGBA) {
-					px.rgba.r = bytes[local_p++];
-					px.rgba.g = bytes[local_p++];
-					px.rgba.b = bytes[local_p++];
-					px.rgba.a = bytes[local_p++];
-				}
-				else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
-					px = index[b1];
-				}
-				else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
-					px.rgba.r += ((b1 >> 4) & 0x03) - 2;
-					px.rgba.g += ((b1 >> 2) & 0x03) - 2;
-					px.rgba.b += (b1 & 0x03) - 2;
-				}
-				else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
-					int b2 = bytes[local_p++];
-					int vg = (b1 & 0x3f) - 32;
-					px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
-					px.rgba.g += vg;
-					px.rgba.b += vg - 8 + (b2 & 0x0f);
-				}
-				else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
-					run = (b1 & 0x3f);
-				}
-
-				index[QOI_COLOR_HASH(px) % 64] = px;
+			else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
+				px.rgba.r += ((b1 >> 4) & 0x03) - 2;
+				px.rgba.g += ((b1 >> 2) & 0x03) - 2;
+				px.rgba.b += (b1 & 0x03) - 2;
+			}
+			else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
+				int b2 = bytes[p++];
+				int vg = (b1 & 0x3f) - 32;
+				px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
+				px.rgba.g += vg;
+				px.rgba.b += vg - 8 + (b2 & 0x0f);
+			}
+			else if (b1 == QOI_OP_RGB) {
+				px.rgba.r = bytes[p++];
+				px.rgba.g = bytes[p++];
+				px.rgba.b = bytes[p++];
+			}
+			else if (b1 == QOI_OP_RGBA) {
+				px.rgba.r = bytes[p++];
+				px.rgba.g = bytes[p++];
+				px.rgba.b = bytes[p++];
+				px.rgba.a = bytes[p++];
+			}
+			else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
+				run = (b1 & 0x3f);
 			}
 
-			if (px_pos < px_len) {
-				pixels[px_pos + 0] = px.rgba.r;
-				pixels[px_pos + 1] = px.rgba.g;
-				pixels[px_pos + 2] = px.rgba.b;
-				if (channels == 4) {
-					pixels[px_pos + 3] = px.rgba.a;
-				}
+			index[QOI_COLOR_HASH(px) % 64] = px;
+		}
+
+		decoded[px_pos] = px.rgba.r;
+		decoded[px_pos + 1] = px.rgba.g;
+		decoded[px_pos + 2] = px.rgba.b;
+		if (desc->channels == 4) {
+			decoded[px_pos + 3] = px.rgba.a;
+		}
+		px_pos += desc->channels;
+	}
+
+	// Parallel copy with channel conversion if needed
+	const int block_size = 4096;  // Process in blocks for better cache utilization
+#pragma omp parallel for schedule(static)
+	for (int block = 0; block < (desc->width * desc->height + block_size - 1) / block_size; block++) {
+		int start = block * block_size;
+		int end = min(start + block_size, desc->width * desc->height);
+
+		for (int i = start; i < end; i++) {
+			int src_pos = i * desc->channels;
+			int dst_pos = i * channels;
+
+			pixels[dst_pos] = decoded[src_pos];
+			pixels[dst_pos + 1] = decoded[src_pos + 1];
+			pixels[dst_pos + 2] = decoded[src_pos + 2];
+			if (channels == 4) {
+				pixels[dst_pos + 3] = desc->channels == 4 ? decoded[src_pos + 3] : 255;
 			}
 		}
 	}
 
+	QOI_FREE(decoded);
 	return pixels;
 }
+
 
 
 #ifndef QOI_NO_STDIO

@@ -231,7 +231,7 @@ PerformanceMetrics decode_file_parallel(const std::string& input_path, const std
     // Decode (Parallel)
     start_time = get_time_ns();
     qoi_desc desc;
-    void* decoded_data = qoi_decode(raw_data, file_size, &desc, 0);
+    void* decoded_data = qoi_decode_parallel(raw_data, file_size, &desc, 0);
     free(raw_data);
     metrics.process_time = get_time_ns() - start_time;
 
@@ -348,13 +348,13 @@ int main(int argc, char* argv[]) {
                     printf("Processing: %s\n", findData.cFileName);
 
                     // Sequential encoding
-                   /* PerformanceMetrics seq_metrics = encode_file(input_path, seq_output_path);*/
+                    PerformanceMetrics seq_metrics = encode_file(input_path, seq_output_path);
 
                     // Parallel encoding
                     PerformanceMetrics par_metrics = encode_file_parallel(input_path, par_output_path);
 
-                    //// Print comparison results
-                    //print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
+                    // Print comparison results
+                    print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
                 }
             }
         } while (FindNextFileA(hFind, &findData));
@@ -381,13 +381,13 @@ int main(int argc, char* argv[]) {
                 printf("Processing: %s\n", findData.cFileName);
 
                 // Sequential decoding
-               /* PerformanceMetrics seq_metrics = decode_file(input_path, seq_output_path);*/
+                PerformanceMetrics seq_metrics = decode_file(input_path, seq_output_path);
 
                 // Parallel decoding
                 PerformanceMetrics par_metrics = decode_file_parallel(input_path, par_output_path);
 
-                //// Print comparison results
-                //print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
+                // Print comparison results
+                print_comparison_results(findData.cFileName, seq_metrics, par_metrics, num_threads);
             }
         } while (FindNextFileA(hFind, &findData));
         FindClose(hFind);
