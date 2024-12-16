@@ -399,3 +399,327 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+
+
+//#include <stdio.h>
+//#include <stdlib.h>
+//#include <string.h>
+//#include <time.h>
+//#include <Windows.h>
+//#include <string>
+//#include <chrono>
+//#include <iomanip>
+//#include <sstream>
+//#include <omp.h>
+//#include <vector>
+//#include <map>
+//
+//// ... (keep all the includes and utility functions)
+//#define STB_IMAGE_IMPLEMENTATION
+//#include "stb_image.h"
+//#define STB_IMAGE_WRITE_IMPLEMENTATION
+//#include "stb_image_write.h"
+//#define QOI_IMPLEMENTATION
+//#include "qoi.h"
+//
+//// Utility functions
+//int64_t get_time_ns() {
+//    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+//        std::chrono::high_resolution_clock::now().time_since_epoch()
+//    ).count();
+//}
+//
+//std::string format_duration(double milliseconds) {
+//    std::ostringstream oss;
+//    oss << std::fixed << std::setprecision(3) << milliseconds;
+//    return oss.str();
+//}
+//
+//std::string format_size(int size) {
+//    if (size < 1024) return std::to_string(size) + " B";
+//    if (size < 1024 * 1024) return std::to_string(size / 1024) + " KB";
+//    return std::to_string(size / (1024 * 1024)) + " MB";
+//}
+//
+//double calculate_speedup(double sequential_time, double parallel_time) {
+//    return sequential_time / parallel_time;
+//}
+//
+//struct ProcessingResult {
+//    std::string filename;
+//    double processing_time;  // in milliseconds
+//    std::string output_path;
+//    int width;
+//    int height;
+//    int channels;
+//};
+//
+//std::vector<ProcessingResult> sequential_encode_results;
+//std::vector<ProcessingResult> parallel_encode_results;
+//std::vector<ProcessingResult> sequential_decode_results;
+//std::vector<ProcessingResult> parallel_decode_results;
+//
+//// Modified encode function to return just processing metrics
+//ProcessingResult encode_file(const std::string& input_path, const std::string& output_path, bool is_parallel) {
+//    ProcessingResult result;
+//    result.filename = input_path.substr(input_path.find_last_of("/\\") + 1);
+//    result.output_path = output_path;
+//
+//    int width, height, channels;
+//    unsigned char* data = stbi_load(input_path.c_str(), &width, &height, &channels, 0);
+//    if (!data) {
+//        printf("Failed to load image: %s\n", input_path.c_str());
+//        return result;
+//    }
+//
+//    result.width = width;
+//    result.height = height;
+//    result.channels = channels;
+//
+//    qoi_desc desc = {
+//        static_cast<unsigned int>(width),
+//        static_cast<unsigned int>(height),
+//        channels,
+//        QOI_SRGB
+//    };
+//
+//    // Measure only encoding time
+//    int64_t start_time = get_time_ns();
+//    int encoded_size;
+//    void* encoded_data = is_parallel ? qoi_encode_parallel(data, &desc, &encoded_size)
+//        : qoi_encode(data, &desc, &encoded_size);
+//    result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
+//
+//    if (encoded_data) {
+//        FILE* f = fopen(output_path.c_str(), "wb");
+//        if (f) {
+//            fwrite(encoded_data, 1, encoded_size, f);
+//            fclose(f);
+//        }
+//        free(encoded_data);
+//    }
+//
+//    stbi_image_free(data);
+//    return result;
+//}
+//
+//// Modified decode function to return just processing metrics
+//ProcessingResult decode_file(const std::string& input_path, const std::string& output_path, bool is_parallel) {
+//    ProcessingResult result;
+//    result.filename = input_path.substr(input_path.find_last_of("/\\") + 1);
+//    result.output_path = output_path;
+//
+//    FILE* f = fopen(input_path.c_str(), "rb");
+//    if (!f) {
+//        printf("Failed to open QOI file: %s\n", input_path.c_str());
+//        return result;
+//    }
+//
+//    fseek(f, 0, SEEK_END);
+//    int file_size = ftell(f);
+//    fseek(f, 0, SEEK_SET);
+//
+//    void* raw_data = malloc(file_size);
+//    fread(raw_data, 1, file_size, f);
+//    fclose(f);
+//
+//    // Measure only decoding time
+//    int64_t start_time = get_time_ns();
+//    qoi_desc desc;
+//    void* decoded_data = is_parallel ? qoi_decode_parallel(raw_data, file_size, &desc, 0)
+//        : qoi_decode(raw_data, file_size, &desc, 0);
+//    result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
+//
+//    if (decoded_data) {
+//        stbi_write_png(output_path.c_str(), desc.width, desc.height,
+//            desc.channels, decoded_data, desc.width * desc.channels);
+//        free(decoded_data);
+//    }
+//
+//    free(raw_data);
+//    result.width = desc.width;
+//    result.height = desc.height;
+//    result.channels = desc.channels;
+//
+//    return result;
+//}
+//
+//void print_comparison_tables(int num_threads) {
+//    // Calculate totals and averages for encoding
+//    double total_seq_encode_time = 0;
+//    double total_par_encode_time = 0;
+//
+//    // Print Encoding Comparison Table
+//    printf("\n+=========================================================================+\n");
+//    printf("|                    ENCODING PERFORMANCE COMPARISON                        |\n");
+//    printf("|                        (%d threads for parallel)                          |\n", num_threads);
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n");
+//    printf("| Image                | Dimensions  | Sequential  | Parallel    | Speedup  |\n");
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n");
+//
+//    for (size_t i = 0; i < sequential_encode_results.size(); i++) {
+//        auto& seq = sequential_encode_results[i];
+//        auto& par = parallel_encode_results[i];
+//        double speedup = seq.processing_time / par.processing_time;
+//
+//        total_seq_encode_time += seq.processing_time;
+//        total_par_encode_time += par.processing_time;
+//
+//        printf("| %-20s | %4dx%4d   | %7.2f ms  | %7.2f ms  | %6.2fx  |\n",
+//            seq.filename.c_str(),
+//            seq.width, seq.height,
+//            seq.processing_time,
+//            par.processing_time,
+//            speedup);
+//    }
+//
+//    double avg_seq_encode = total_seq_encode_time / sequential_encode_results.size();
+//    double avg_par_encode = total_par_encode_time / parallel_encode_results.size();
+//    double overall_encode_speedup = total_seq_encode_time / total_par_encode_time;
+//
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n");
+//    printf("| TOTAL                | -           | %7.2f ms  | %7.2f ms  | %6.2fx  |\n",
+//        total_seq_encode_time, total_par_encode_time, overall_encode_speedup);
+//    printf("| AVERAGE              | -           | %7.2f ms  | %7.2f ms  | -        |\n",
+//        avg_seq_encode, avg_par_encode);
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n\n");
+//
+//    // Calculate totals and averages for decoding
+//    double total_seq_decode_time = 0;
+//    double total_par_decode_time = 0;
+//
+//    // Print Decoding Comparison Table
+//    printf("+=========================================================================+\n");
+//    printf("|                    DECODING PERFORMANCE COMPARISON                        |\n");
+//    printf("|                        (%d threads for parallel)                          |\n", num_threads);
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n");
+//    printf("| Image                | Dimensions  | Sequential  | Parallel    | Speedup  |\n");
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n");
+//
+//    for (size_t i = 0; i < sequential_decode_results.size(); i++) {
+//        auto& seq = sequential_decode_results[i];
+//        auto& par = parallel_decode_results[i];
+//        double speedup = seq.processing_time / par.processing_time;
+//
+//        total_seq_decode_time += seq.processing_time;
+//        total_par_decode_time += par.processing_time;
+//
+//        printf("| %-20s | %4dx%4d   | %7.2f ms  | %7.2f ms  | %6.2fx  |\n",
+//            seq.filename.c_str(),
+//            seq.width, seq.height,
+//            seq.processing_time,
+//            par.processing_time,
+//            speedup);
+//    }
+//
+//    double avg_seq_decode = total_seq_decode_time / sequential_decode_results.size();
+//    double avg_par_decode = total_par_decode_time / parallel_decode_results.size();
+//    double overall_decode_speedup = total_seq_decode_time / total_par_decode_time;
+//
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n");
+//    printf("| TOTAL                | -           | %7.2f ms  | %7.2f ms  | %6.2fx  |\n",
+//        total_seq_decode_time, total_par_decode_time, overall_decode_speedup);
+//    printf("| AVERAGE              | -           | %7.2f ms  | %7.2f ms  | -        |\n",
+//        avg_seq_decode, avg_par_decode);
+//    printf("+----------------------+-------------+-------------+-------------+----------+\n\n");
+//
+//    // Print Overall Summary
+//    printf("+=========================================================================+\n");
+//    printf("|                              OVERALL SUMMARY                              |\n");
+//    printf("+----------------------+-------------+-------------+----------+------------+\n");
+//    printf("| Operation           | Seq Total   | Par Total   | Speedup  | Time Saved |\n");
+//    printf("+----------------------+-------------+-------------+----------+------------+\n");
+//    printf("| Encoding            | %7.2f ms  | %7.2f ms  | %6.2fx  | %7.2f ms |\n",
+//        total_seq_encode_time,
+//        total_par_encode_time,
+//        overall_encode_speedup,
+//        total_seq_encode_time - total_par_encode_time);
+//    printf("| Decoding            | %7.2f ms  | %7.2f ms  | %6.2fx  | %7.2f ms |\n",
+//        total_seq_decode_time,
+//        total_par_decode_time,
+//        overall_decode_speedup,
+//        total_seq_decode_time - total_par_decode_time);
+//    printf("+----------------------+-------------+-------------+----------+------------+\n");
+//}
+//
+//int main(int argc, char* argv[]) {
+//    if (argc != 4) {
+//        printf("Usage: %s <input_dir> <output_dir> <num_threads>\n", argv[0]);
+//        return 1;
+//    }
+//
+//    const char* input_dir = argv[1];
+//    const char* output_dir = argv[2];
+//    const int num_threads = atoi(argv[3]);
+//
+//    CreateDirectoryA(output_dir, NULL);
+//
+//    // Process images for encoding
+//    WIN32_FIND_DATAA findData;
+//    char search_path[MAX_PATH];
+//    sprintf_s(search_path, "%s\\*.*", input_dir);
+//
+//    HANDLE hFind = FindFirstFileA(search_path, &findData);
+//    if (hFind != INVALID_HANDLE_VALUE) {
+//        do {
+//            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+//                char* ext = strrchr(findData.cFileName, '.');
+//                if (ext && (_stricmp(ext, ".png") == 0 || _stricmp(ext, ".jpg") == 0 || _stricmp(ext, ".jpeg") == 0)) {
+//                    char input_path[MAX_PATH];
+//                    char seq_output_path[MAX_PATH];
+//                    char par_output_path[MAX_PATH];
+//
+//                    sprintf_s(input_path, "%s\\%s", input_dir, findData.cFileName);
+//                    sprintf_s(seq_output_path, "%s\\seq_%.*s.qoi", output_dir, (int)(ext - findData.cFileName), findData.cFileName);
+//                    sprintf_s(par_output_path, "%s\\par_%.*s.qoi", output_dir, (int)(ext - findData.cFileName), findData.cFileName);
+//
+//                    printf("Encoding: %s\n", findData.cFileName);
+//
+//                    // Perform sequential and parallel encoding
+//                    sequential_encode_results.push_back(encode_file(input_path, seq_output_path, false));
+//                    parallel_encode_results.push_back(encode_file(input_path, par_output_path, true));
+//                }
+//            }
+//        } while (FindNextFileA(hFind, &findData));
+//        FindClose(hFind);
+//    }
+//
+//    // Process sequential encoded files for decoding
+//    sprintf_s(search_path, "%s\\seq_*.qoi", output_dir);
+//    hFind = FindFirstFileA(search_path, &findData);
+//    if (hFind != INVALID_HANDLE_VALUE) {
+//        do {
+//            char input_path[MAX_PATH];
+//            char output_path[MAX_PATH];
+//
+//            sprintf_s(input_path, "%s\\%s", output_dir, findData.cFileName);
+//            sprintf_s(output_path, "%s\\decoded_%s.png", output_dir, findData.cFileName);
+//
+//            printf("Decoding sequential: %s\n", findData.cFileName);
+//            sequential_decode_results.push_back(decode_file(input_path, output_path, false));
+//        } while (FindNextFileA(hFind, &findData));
+//        FindClose(hFind);
+//    }
+//
+//    // Process parallel encoded files for decoding
+//    sprintf_s(search_path, "%s\\par_*.qoi", output_dir);
+//    hFind = FindFirstFileA(search_path, &findData);
+//    if (hFind != INVALID_HANDLE_VALUE) {
+//        do {
+//            char input_path[MAX_PATH];
+//            char output_path[MAX_PATH];
+//
+//            sprintf_s(input_path, "%s\\%s", output_dir, findData.cFileName);
+//            sprintf_s(output_path, "%s\\decoded_%s.png", output_dir, findData.cFileName);
+//
+//            printf("Decoding parallel: %s\n", findData.cFileName);
+//            parallel_decode_results.push_back(decode_file(input_path, output_path, true));
+//        } while (FindNextFileA(hFind, &findData));
+//        FindClose(hFind);
+//    }
+//
+//    // Print final comparison tables
+//    print_comparison_tables(num_threads);
+//
+//    return 0;
+//}
