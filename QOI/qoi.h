@@ -839,7 +839,309 @@ void* qoi_encode_parallel_optimized(const void* data, const qoi_desc* desc, int*
 	return bytes;
 }
 
+void* qoi_encode_parallel_block(const void* data, const qoi_desc* desc, int* out_len) {
+	if (data == NULL || out_len == NULL || desc == NULL ||
+		desc->width == 0 || desc->height == 0 ||
+		desc->channels < 3 || desc->channels > 4 ||
+		desc->colorspace > 1 ||
+		desc->height >= QOI_PIXELS_MAX / desc->width) {
+		return NULL;
+	}
 
+	int max_size = desc->width * desc->height * (desc->channels + 1) +
+		QOI_HEADER_SIZE + sizeof(qoi_padding);
+	unsigned char* bytes = (unsigned char*)QOI_MALLOC(max_size);
+	if (!bytes) return NULL;
+
+	// Write header
+	int p = 0;
+	qoi_write_32(bytes, &p, QOI_MAGIC);
+	qoi_write_32(bytes, &p, desc->width);
+	qoi_write_32(bytes, &p, desc->height);
+	bytes[p++] = desc->channels;
+	bytes[p++] = desc->colorspace;
+
+	const unsigned char* pixels = (const unsigned char*)data;
+	int channels = desc->channels;
+	int width = desc->width;
+	int height = desc->height;
+
+	// Block configuration
+	const int BLOCK_HEIGHT = 32;  // Process 32 rows per block
+	int num_blocks = (height + BLOCK_HEIGHT - 1) / BLOCK_HEIGHT;
+
+	// Arrays to track block output positions and sizes
+	int* block_sizes = (int*)QOI_MALLOC(num_blocks * sizeof(int));
+	unsigned char** block_outputs = (unsigned char**)QOI_MALLOC(num_blocks * sizeof(unsigned char*));
+	if (!block_sizes || !block_outputs) {
+		QOI_FREE(bytes);
+		QOI_FREE(block_sizes);
+		QOI_FREE(block_outputs);
+		return NULL;
+	}
+
+	// Process blocks in parallel
+#pragma omp parallel for schedule(dynamic)
+	for (int block = 0; block < num_blocks; block++) {
+		int start_row = block * BLOCK_HEIGHT;
+		int end_row = min(start_row + BLOCK_HEIGHT, height);
+		int block_px_len = width * (end_row - start_row) * channels;
+
+		qoi_rgba_t index[64] = { 0 };
+		qoi_rgba_t px = { 0, 0, 0, 255 };
+		qoi_rgba_t px_prev = { 0, 0, 0, 255 };
+		int run = 0;
+		int local_size = 0;
+
+		// Allocate local buffer for this block
+		unsigned char* local_buffer = (unsigned char*)QOI_MALLOC(block_px_len * 2); // Extra space for worst case
+		if (!local_buffer) continue;
+
+		// Get previous pixel if not first block
+		if (block > 0) {
+			int prev_px = ((start_row - 1) * width + (width - 1)) * channels;
+			px_prev.rgba.r = pixels[prev_px + 0];
+			px_prev.rgba.g = pixels[prev_px + 1];
+			px_prev.rgba.b = pixels[prev_px + 2];
+			px_prev.rgba.a = channels == 4 ? pixels[prev_px + 3] : 255;
+		}
+
+		// Process pixels in the block
+		for (int y = start_row; y < end_row; y++) {
+			for (int x = 0; x < width; x++) {
+				int px_pos = (y * width + x) * channels;
+
+				px.rgba.r = pixels[px_pos + 0];
+				px.rgba.g = pixels[px_pos + 1];
+				px.rgba.b = pixels[px_pos + 2];
+				if (channels == 4) {
+					px.rgba.a = pixels[px_pos + 3];
+				}
+
+				if (px.v == px_prev.v) {
+					run++;
+					if (run == 62 || (y == end_row - 1 && x == width - 1)) {
+						local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
+						run = 0;
+					}
+				}
+				else {
+					if (run > 0) {
+						local_buffer[local_size++] = QOI_OP_RUN | (run - 1);
+						run = 0;
+					}
+
+					int index_pos = QOI_COLOR_HASH(px) % 64;
+					if (index[index_pos].v == px.v) {
+						local_buffer[local_size++] = QOI_OP_INDEX | index_pos;
+					}
+					else {
+						index[index_pos] = px;
+						if (px.rgba.a == px_prev.rgba.a) {
+							signed char vr = px.rgba.r - px_prev.rgba.r;
+							signed char vg = px.rgba.g - px_prev.rgba.g;
+							signed char vb = px.rgba.b - px_prev.rgba.b;
+							signed char vg_r = vr - vg;
+							signed char vg_b = vb - vg;
+
+							if (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 && vb < 2) {
+								local_buffer[local_size++] = QOI_OP_DIFF |
+									(vr + 2) << 4 | (vg + 2) << 2 | (vb + 2);
+							}
+							else if (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 &&
+								vg_b > -9 && vg_b < 8) {
+								local_buffer[local_size++] = QOI_OP_LUMA | (vg + 32);
+								local_buffer[local_size++] = (vg_r + 8) << 4 | (vg_b + 8);
+							}
+							else {
+								local_buffer[local_size++] = QOI_OP_RGB;
+								local_buffer[local_size++] = px.rgba.r;
+								local_buffer[local_size++] = px.rgba.g;
+								local_buffer[local_size++] = px.rgba.b;
+							}
+						}
+						else {
+							local_buffer[local_size++] = QOI_OP_RGBA;
+							local_buffer[local_size++] = px.rgba.r;
+							local_buffer[local_size++] = px.rgba.g;
+							local_buffer[local_size++] = px.rgba.b;
+							local_buffer[local_size++] = px.rgba.a;
+						}
+					}
+				}
+				px_prev = px;
+			}
+		}
+
+		// Store block output
+		block_sizes[block] = local_size;
+		block_outputs[block] = local_buffer;
+	}
+
+	// Combine blocks sequentially
+	int write_pos = p;
+	for (int i = 0; i < num_blocks; i++) {
+		memcpy(bytes + write_pos, block_outputs[i], block_sizes[i]);
+		write_pos += block_sizes[i];
+		QOI_FREE(block_outputs[i]);
+	}
+
+	// Write padding
+	memcpy(bytes + write_pos, qoi_padding, sizeof(qoi_padding));
+	write_pos += sizeof(qoi_padding);
+
+	// Cleanup
+	QOI_FREE(block_sizes);
+	QOI_FREE(block_outputs);
+
+	*out_len = write_pos;
+	return bytes;
+}
+
+void* qoi_decode_parallel_block(const void* data, int size, qoi_desc* desc, int channels) {
+	const unsigned char* bytes;
+	unsigned int header_magic;
+	unsigned char* pixels;
+	int px_len, chunks_len;
+	int p = 0;
+
+	// Input validation
+	if (data == NULL || desc == NULL ||
+		(channels != 0 && channels != 3 && channels != 4) ||
+		size < QOI_HEADER_SIZE + (int)sizeof(qoi_padding)) {
+		return NULL;
+	}
+
+	// Header processing
+	bytes = (const unsigned char*)data;
+	header_magic = qoi_read_32(bytes, &p);
+	desc->width = qoi_read_32(bytes, &p);
+	desc->height = qoi_read_32(bytes, &p);
+	desc->channels = bytes[p++];
+	desc->colorspace = bytes[p++];
+
+	if (desc->width == 0 || desc->height == 0 ||
+		desc->channels < 3 || desc->channels > 4 ||
+		desc->colorspace > 1 ||
+		header_magic != QOI_MAGIC ||
+		desc->height >= QOI_PIXELS_MAX / desc->width) {
+		return NULL;
+	}
+
+	if (channels == 0) {
+		channels = desc->channels;
+	}
+
+	px_len = desc->width * desc->height * channels;
+	pixels = (unsigned char*)QOI_MALLOC(px_len);
+	if (!pixels) {
+		return NULL;
+	}
+
+	chunks_len = size - (int)sizeof(qoi_padding);
+
+	// Shared state between blocks
+	struct {
+		qoi_rgba_t index[64];
+		qoi_rgba_t px;
+		int p;
+		int run;
+	} shared_state;
+
+	// Initialize shared state
+	QOI_ZEROARR(shared_state.index);
+	shared_state.px.rgba.r = 0;
+	shared_state.px.rgba.g = 0;
+	shared_state.px.rgba.b = 0;
+	shared_state.px.rgba.a = 255;
+	shared_state.p = p;
+	shared_state.run = 0;
+
+	// Process in blocks
+	const int BLOCK_SIZE = 128;  // Pixels per block
+	int total_pixels = desc->width * desc->height;
+	int num_blocks = (total_pixels + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+#pragma omp parallel
+	{
+		qoi_rgba_t thread_index[64];
+		qoi_rgba_t thread_px;
+		int thread_run;
+
+#pragma omp for ordered schedule(static, 1)
+		for (int block = 0; block < num_blocks; block++) {
+			// Single ordered section per iteration
+#pragma omp ordered
+			{
+				// Get state from previous block
+				memcpy(thread_index, shared_state.index, sizeof(thread_index));
+				thread_px = shared_state.px;
+				thread_run = shared_state.run;
+
+				// Process this block
+				int block_start = block * BLOCK_SIZE;
+				int block_end = min(block_start + BLOCK_SIZE, total_pixels);
+
+				for (int px_pos = block_start; px_pos < block_end; px_pos++) {
+					if (thread_run > 0) {
+						thread_run--;
+					}
+					else if (shared_state.p < chunks_len) {
+						int b1 = bytes[shared_state.p++];
+
+						if (b1 == QOI_OP_RGB) {
+							thread_px.rgba.r = bytes[shared_state.p++];
+							thread_px.rgba.g = bytes[shared_state.p++];
+							thread_px.rgba.b = bytes[shared_state.p++];
+						}
+						else if (b1 == QOI_OP_RGBA) {
+							thread_px.rgba.r = bytes[shared_state.p++];
+							thread_px.rgba.g = bytes[shared_state.p++];
+							thread_px.rgba.b = bytes[shared_state.p++];
+							thread_px.rgba.a = bytes[shared_state.p++];
+						}
+						else if ((b1 & QOI_MASK_2) == QOI_OP_INDEX) {
+							thread_px = thread_index[b1];
+						}
+						else if ((b1 & QOI_MASK_2) == QOI_OP_DIFF) {
+							thread_px.rgba.r += ((b1 >> 4) & 0x03) - 2;
+							thread_px.rgba.g += ((b1 >> 2) & 0x03) - 2;
+							thread_px.rgba.b += (b1 & 0x03) - 2;
+						}
+						else if ((b1 & QOI_MASK_2) == QOI_OP_LUMA) {
+							int b2 = bytes[shared_state.p++];
+							int vg = (b1 & 0x3f) - 32;
+							thread_px.rgba.r += vg - 8 + ((b2 >> 4) & 0x0f);
+							thread_px.rgba.g += vg;
+							thread_px.rgba.b += vg - 8 + (b2 & 0x0f);
+						}
+						else if ((b1 & QOI_MASK_2) == QOI_OP_RUN) {
+							thread_run = (b1 & 0x3f);
+						}
+
+						thread_index[QOI_COLOR_HASH(thread_px) % 64] = thread_px;
+					}
+
+					// Write pixel to output
+					int out_pos = px_pos * channels;
+					pixels[out_pos + 0] = thread_px.rgba.r;
+					pixels[out_pos + 1] = thread_px.rgba.g;
+					pixels[out_pos + 2] = thread_px.rgba.b;
+					if (channels == 4) {
+						pixels[out_pos + 3] = thread_px.rgba.a;
+					}
+				}
+
+				// Update shared state for next block
+				memcpy(shared_state.index, thread_index, sizeof(shared_state.index));
+				shared_state.px = thread_px;
+				shared_state.run = thread_run;
+			}
+		}
+	}
+
+	return pixels;
+}
 void* qoi_decode_parallel_optimized(const void* data, int size, qoi_desc* desc, int channels) {
 	if (data == NULL || desc == NULL ||
 		(channels != 0 && channels != 3 && channels != 4) ||

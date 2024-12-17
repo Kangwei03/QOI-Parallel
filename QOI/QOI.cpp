@@ -486,7 +486,7 @@ ProcessingResult encode_file(const std::string& input_path, const std::string& o
     // Measure only encoding time
     int64_t start_time = get_time_ns();
     int encoded_size;
-    void* encoded_data = is_parallel ? qoi_encode_parallel_optimized(data, &desc, &encoded_size)
+    void* encoded_data = is_parallel ? qoi_encode_parallel_block(data, &desc, &encoded_size)
         : qoi_encode(data, &desc, &encoded_size);
     result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
 
@@ -526,7 +526,7 @@ ProcessingResult decode_file(const std::string& input_path, const std::string& o
     // Measure only decoding time
     int64_t start_time = get_time_ns();
     qoi_desc desc;
-    void* decoded_data = is_parallel ? qoi_decode_parallel_optimized(raw_data, file_size, &desc, 0)
+    void* decoded_data = is_parallel ? qoi_decode_parallel_block(raw_data, file_size, &desc, 0)
         : qoi_decode(raw_data, file_size, &desc, 0);
     result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
 
