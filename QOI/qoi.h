@@ -839,7 +839,7 @@ void* qoi_encode_parallel_optimized(const void* data, const qoi_desc* desc, int*
 	return bytes;
 }
 
-void* qoi_encode_parallel_block(const void* data, const qoi_desc* desc, int* out_len) {
+void* qoi_encode_parallel_block(const void* data, const qoi_desc* desc, int* out_len, int num_threads) {
 	if (data == NULL || out_len == NULL || desc == NULL ||
 		desc->width == 0 || desc->height == 0 ||
 		desc->channels < 3 || desc->channels > 4 ||
@@ -881,7 +881,7 @@ void* qoi_encode_parallel_block(const void* data, const qoi_desc* desc, int* out
 	}
 
 	// Process blocks in parallel
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads (num_threads)
 	for (int block = 0; block < num_blocks; block++) {
 		int start_row = block * BLOCK_HEIGHT;
 		int end_row = min(start_row + BLOCK_HEIGHT, height);
@@ -998,7 +998,7 @@ void* qoi_encode_parallel_block(const void* data, const qoi_desc* desc, int* out
 	return bytes;
 }
 
-void* qoi_decode_parallel_block(const void* data, int size, qoi_desc* desc, int channels) {
+void* qoi_decode_parallel_block(const void* data, int size, qoi_desc* desc, int channels, int num_threads) {
 	const unsigned char* bytes;
 	unsigned int header_magic;
 	unsigned char* pixels;
@@ -1058,7 +1058,7 @@ void* qoi_decode_parallel_block(const void* data, int size, qoi_desc* desc, int 
 	shared_state.run = 0;
 
 	// Process in blocks
-	const int BLOCK_SIZE = 128;  // Pixels per block
+	const int BLOCK_SIZE = 32;  // Pixels per block
 	int total_pixels = desc->width * desc->height;
 	int num_blocks = (total_pixels + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
@@ -1068,7 +1068,7 @@ void* qoi_decode_parallel_block(const void* data, int size, qoi_desc* desc, int 
 		qoi_rgba_t thread_px;
 		int thread_run;
 
-#pragma omp for ordered schedule(static, 1)
+#pragma omp for ordered schedule(static, 1) 
 		for (int block = 0; block < num_blocks; block++) {
 			// Single ordered section per iteration
 #pragma omp ordered
@@ -1142,6 +1142,7 @@ void* qoi_decode_parallel_block(const void* data, int size, qoi_desc* desc, int 
 
 	return pixels;
 }
+
 void* qoi_decode_parallel_optimized(const void* data, int size, qoi_desc* desc, int channels) {
 	if (data == NULL || desc == NULL ||
 		(channels != 0 && channels != 3 && channels != 4) ||

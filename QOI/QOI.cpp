@@ -460,7 +460,7 @@ std::vector<ProcessingResult> sequential_decode_results;
 std::vector<ProcessingResult> parallel_decode_results;
 
 // Modified encode function to return just processing metrics
-ProcessingResult encode_file(const std::string& input_path, const std::string& output_path, bool is_parallel) {
+ProcessingResult encode_file(const std::string& input_path, const std::string& output_path, bool is_parallel, int num_threads) {
     ProcessingResult result;
     result.filename = input_path.substr(input_path.find_last_of("/\\") + 1);
     result.output_path = output_path;
@@ -486,7 +486,7 @@ ProcessingResult encode_file(const std::string& input_path, const std::string& o
     // Measure only encoding time
     int64_t start_time = get_time_ns();
     int encoded_size;
-    void* encoded_data = is_parallel ? qoi_encode_parallel_block(data, &desc, &encoded_size)
+    void* encoded_data = is_parallel ? qoi_encode_parallel_block(data, &desc, &encoded_size, num_threads)
         : qoi_encode(data, &desc, &encoded_size);
     result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
 
@@ -504,7 +504,7 @@ ProcessingResult encode_file(const std::string& input_path, const std::string& o
 }
 
 // Modified decode function to return just processing metrics
-ProcessingResult decode_file(const std::string& input_path, const std::string& output_path, bool is_parallel) {
+ProcessingResult decode_file(const std::string& input_path, const std::string& output_path, bool is_parallel, int num_threads) {
     ProcessingResult result;
     result.filename = input_path.substr(input_path.find_last_of("/\\") + 1);
     result.output_path = output_path;
@@ -526,7 +526,7 @@ ProcessingResult decode_file(const std::string& input_path, const std::string& o
     // Measure only decoding time
     int64_t start_time = get_time_ns();
     qoi_desc desc;
-    void* decoded_data = is_parallel ? qoi_decode_parallel_block(raw_data, file_size, &desc, 0)
+    void* decoded_data = is_parallel ? qoi_decode_parallel_block(raw_data, file_size, &desc, 0, num_threads)
         : qoi_decode(raw_data, file_size, &desc, 0);
     result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
 
@@ -676,8 +676,8 @@ int main(int argc, char* argv[]) {
                     printf("Encoding: %s\n", findData.cFileName);
 
                     // Perform sequential and parallel encoding
-                    sequential_encode_results.push_back(encode_file(input_path, seq_output_path, false));
-                    parallel_encode_results.push_back(encode_file(input_path, par_output_path, true));
+                    sequential_encode_results.push_back(encode_file(input_path, seq_output_path, false, 0));
+                    parallel_encode_results.push_back(encode_file(input_path, par_output_path, true, num_threads));
                 }
             }
         } while (FindNextFileA(hFind, &findData));
@@ -696,7 +696,7 @@ int main(int argc, char* argv[]) {
             sprintf_s(output_path, "%s\\decoded_%s.png", output_dir, findData.cFileName);
 
             printf("Decoding sequential: %s\n", findData.cFileName);
-            sequential_decode_results.push_back(decode_file(input_path, output_path, false));
+            sequential_decode_results.push_back(decode_file(input_path, output_path, false, 0));
         } while (FindNextFileA(hFind, &findData));
         FindClose(hFind);
     }
@@ -713,7 +713,7 @@ int main(int argc, char* argv[]) {
             sprintf_s(output_path, "%s\\decoded_%s.png", output_dir, findData.cFileName);
 
             printf("Decoding parallel: %s\n", findData.cFileName);
-            parallel_decode_results.push_back(decode_file(input_path, output_path, true));
+            parallel_decode_results.push_back(decode_file(input_path, output_path, true, num_threads));
         } while (FindNextFileA(hFind, &findData));
         FindClose(hFind);
     }
