@@ -486,7 +486,8 @@ ProcessingResult encode_file(const std::string& input_path, const std::string& o
     // Measure only encoding time
     int64_t start_time = get_time_ns();
     int encoded_size;
-    void* encoded_data = is_parallel ? qoi_encode_parallel_block(data, &desc, &encoded_size, num_threads)
+   /* void* encoded_data = is_parallel ? qoi_encode_parallel_block(data, &desc, &encoded_size, num_threads)*/
+    void* encoded_data = is_parallel ? qoi_encode_parallel_block_simple(data, &desc, &encoded_size, num_threads)
         : qoi_encode(data, &desc, &encoded_size);
     result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
 
@@ -526,7 +527,9 @@ ProcessingResult decode_file(const std::string& input_path, const std::string& o
     // Measure only decoding time
     int64_t start_time = get_time_ns();
     qoi_desc desc;
-    void* decoded_data = is_parallel ? qoi_decode_parallel_block(raw_data, file_size, &desc, 0, num_threads)
+    /*void* decoded_data = is_parallel ? qoi_decode_parallel_block(raw_data, file_size, &desc, 0, num_threads)*/
+    //void* decoded_data = is_parallel ? qoi_decode_parallel_chunks(raw_data, file_size, &desc, 0)
+    void* decoded_data = is_parallel ? qoi_decode_parallel_block_simple(raw_data, file_size, &desc, 0, num_threads)
         : qoi_decode(raw_data, file_size, &desc, 0);
     result.processing_time = (get_time_ns() - start_time) / 1e6; // Convert to milliseconds
 
@@ -643,14 +646,14 @@ void print_comparison_tables(int num_threads) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 4) {
+    /*if (argc != 4) {
         printf("Usage: %s <input_dir> <output_dir> <num_threads>\n", argv[0]);
         return 1;
-    }
+    }*/
 
-    const char* input_dir = argv[1];
-    const char* output_dir = argv[2];
-    const int num_threads = atoi(argv[3]);
+    const char* input_dir = "C:\\Users\\user\\OneDrive\\Desktop\\QOI\\DSPC\\x64\\Debug\\images";
+    const char* output_dir = "C:\\Users\\user\\OneDrive\\Desktop\\QOI\\DSPC\\x64\\Debug\\output";
+    const int num_threads = 8;
 
     CreateDirectoryA(output_dir, NULL);
 
