@@ -1,0 +1,15 @@
+﻿  qoiMPI.cpp
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.h(95,10): warning C4101: 'start_time': unreferenced local variable
+  (compiling source file 'qoiMPI.cpp')
+  
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.h(95,22): warning C4101: 'used_time': unreferenced local variable
+  (compiling source file 'qoiMPI.cpp')
+  
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.h(1164,20): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+  (compiling source file 'qoiMPI.cpp')
+  
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.cpp(71,23): warning C4838: conversion from 'int' to 'unsigned int' requires a narrowing conversion
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.cpp(71,30): warning C4838: conversion from 'int' to 'unsigned int' requires a narrowing conversion
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.cpp(71,38): warning C4838: conversion from 'int' to 'unsigned char' requires a narrowing conversion
+C:\Users\yangy\source\repos\qoiMPI\qoiMPI\qoiMPI.cpp(47,50): warning C4101: 'save_time': unreferenced local variable
+  qoiMPI.vcxproj -> C:\Users\yangy\source\repos\qoiMPI\x64\Debug\qoiMPI.exe
