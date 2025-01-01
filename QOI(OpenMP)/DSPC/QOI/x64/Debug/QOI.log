@@ -1,0 +1,11 @@
+﻿  QOI.cpp
+C:\Users\user\OneDrive\Desktop\DSPCFinal\QOI(OpenMP)\DSPC\QOI\qoi.h(217,1): warning C4005: '_CRT_SECURE_NO_WARNINGS': macro redefinition
+  (compiling source file 'QOI.cpp')
+  C:\Users\user\OneDrive\Desktop\DSPCFinal\QOI(OpenMP)\DSPC\QOI\qoi.h(217,1):
+  '_CRT_SECURE_NO_WARNINGS' previously declared on the command line
+  
+C:\Users\user\OneDrive\Desktop\DSPCFinal\QOI(OpenMP)\DSPC\QOI\qoi.h(1223,20): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+  (compiling source file 'QOI.cpp')
+  
+C:\Users\user\OneDrive\Desktop\DSPCFinal\QOI(OpenMP)\DSPC\QOI\QOI.cpp(490,9): warning C4838: conversion from 'int' to 'unsigned char' requires a narrowing conversion
+  QOI.vcxproj -> C:\Users\user\OneDrive\Desktop\DSPCFinal\QOI(OpenMP)\DSPC\x64\Debug\QOI.exe

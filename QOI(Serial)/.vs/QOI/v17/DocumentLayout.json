@@ -1,0 +1,41 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\user\\OneDrive\\Desktop\\QOI\\DSPC\\QOI(Serial)\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{27060E12-4D93-477C-A232-0F62F5028706}|QOI\\QOI.vcxproj|C:\\Users\\user\\OneDrive\\Desktop\\QOI\\DSPC\\QOI(Serial)\\QOI\\QOI.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{27060E12-4D93-477C-A232-0F62F5028706}|QOI\\QOI.vcxproj|solutionrelative:QOI\\QOI.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 1,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "QOI.cpp",
+              "DocumentMoniker": "C:\\Users\\user\\OneDrive\\Desktop\\QOI\\DSPC\\QOI(Serial)\\QOI\\QOI.cpp",
+              "RelativeDocumentMoniker": "QOI\\QOI.cpp",
+              "ToolTip": "C:\\Users\\user\\OneDrive\\Desktop\\QOI\\DSPC\\QOI(Serial)\\QOI\\QOI.cpp",
+              "RelativeToolTip": "QOI\\QOI.cpp",
+              "ViewState": "AQIAAJYAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2025-01-01T09:30:21.936Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
