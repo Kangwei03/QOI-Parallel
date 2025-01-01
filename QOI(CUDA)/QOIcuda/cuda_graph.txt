@@ -1,0 +1,100 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Read the data from the provided text file
+df = pd.read_excel('performance.xlsx')
+
+# Create figure with two subplots side by side
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+
+def plot_operation(ax, data_df, operation_type):
+    # Create a copy
+    data_df = data_df.copy()
+    
+    # Sort by total pixels for consistent ordering
+    data_df['TotalPixels'] = data_df['ImageWidth'] * data_df['ImageHeight']
+    
+    # Create unique identifier for images based on dimensions only
+    data_df['ImageKey'] = data_df['ImageWidth'].astype(str) + 'x' + data_df['ImageHeight'].astype(str)
+    
+    # Create the display label
+    data_df['ImageDimensions'] = data_df.apply(
+        lambda row: f"{row['FileSize'] / (1024 * 1024):.1f}MB\n({row['ImageWidth']}x{row['ImageHeight']})", 
+        axis=1
+    )
+
+    # Sort by total pixels for consistent ordering
+    data_df = data_df.sort_values('TotalPixels')
+    
+    # Create a mapping from ImageKey to a representative ImageDimensions
+    key_to_dim = {}
+    for _, row in data_df.iterrows():
+        if row['ImageKey'] not in key_to_dim:
+            key_to_dim[row['ImageKey']] = row['ImageDimensions']
+    
+    # Create a new column with deduplicated dimensions
+    data_df['UniqueDimensions'] = data_df['ImageKey'].map(key_to_dim)
+    
+    # Print debug information
+    print(f"\nDebug info for {operation_type}:")
+    print("Total unique images:", len(data_df['ImageKey'].unique()))
+    print("Thread counts:", sorted(data_df['ThreadCount'].unique()))
+
+    # Create base mapping for x-axis (sorted by total pixels)
+    unique_images = data_df.sort_values('TotalPixels')['UniqueDimensions'].unique()
+    size_to_index = {size: i for i, size in enumerate(unique_images)}
+
+    # Create color map for different thread counts
+    colors = ['blue', 'red', 'green', 'orange']
+
+    # Plot serial (ThreadCount = 1)
+    serial_data = data_df[data_df['ThreadCount'] == 1]
+    x_points = [size_to_index[size] for size in serial_data['UniqueDimensions']]
+    
+    ax.plot(x_points, 
+            serial_data['ProcessingTime'].values,
+            color=colors[0],
+            marker='o',
+            label='Serial',
+            linewidth=2,
+            markersize=6)
+
+    # Plot CUDA data for each thread configuration
+    thread_counts = [128, 256, 512]  # CUDA threads per block
+    for idx, tc in enumerate(thread_counts, 1):
+        thread_data = data_df[data_df['ThreadCount'] == tc]
+        x_points = [size_to_index[size] for size in thread_data['UniqueDimensions']]
+
+        ax.plot(x_points, 
+                thread_data['ProcessingTime'].values,
+                color=colors[idx],
+                marker='o',
+                label=f'CUDA {tc} Threads/Block',
+                linewidth=2,
+                markersize=6)
+
+    ax.set_title(f'QOI {operation_type} Operation Execution Time')
+    ax.set_xlabel('Image Size and Dimensions')
+    ax.set_ylabel('Processing Time (ms)')
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.legend()
+
+    # Set x-ticks and labels
+    ax.set_xticks(range(len(unique_images)))
+    ax.set_xticklabels(unique_images, rotation=45, ha='right')
+    ax.set_ylim(bottom=0)
+
+# Add main title
+fig.suptitle('Performance Comparison: Serial vs CUDA Implementation', fontsize=14, y=1.02)
+
+# Plot encode and decode
+plot_operation(ax1, df[df['Operation'] == 'Encode'], 'Encode')
+plot_operation(ax2, df[df['Operation'] == 'Decode'], 'Decode')
+
+# Adjust layout to prevent label cutoff
+plt.tight_layout(pad=2.0)
+
+# Save with higher quality and larger size
+plt.savefig('cuda_execution_times_comparison.png', dpi=300, bbox_inches='tight')
+plt.close()
